@@ -3,7 +3,7 @@ services:
     name: psi-09-discord-interface
     env: python
     plan: free # Free tier for testing
-    region: ohio # Ensure this matches your backend's region for faster internal networking
+    region: singapore # Ensure this matches your backend's region for faster internal networking
     buildCommand: pip install flask aiohttp discord.py-self python-dotenv
     startCommand: python self_interface.py
     envVars:
