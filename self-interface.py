@@ -61,96 +61,78 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    # Ignore messages sent by the bot itself
     if message.author == client.user:
         return
 
     # 1. Identify Context
     is_dm = isinstance(message.channel, discord.DMChannel)
     is_group_dm = isinstance(message.channel, discord.GroupChannel)
-    is_mentioned = client.user in message.mentions
 
-    # Define the group/context name for MongoDB
+    # RELIABLE MENTION DETECTION
+    # Checks if you are tagged OR if your numeric ID is in the text
+    is_mentioned = client.user in message.mentions
+    if not is_mentioned:
+        # Fallback: check raw text for your ID (Discord sometimes misses this in Group DMs)
+        is_mentioned = str(client.user.id) in message.content
+
+    # Define the group name
     if is_dm:
         group_name = "Discord_DM"
     elif is_group_dm:
-        # Use the group's name if it exists, otherwise use its unique ID
         group_name = (
             message.channel.name
             if message.channel.name
             else f"GroupDM_{message.channel.id}"
         )
     else:
-        # This is for actual Servers/Guilds
         group_name = (
             str(message.guild.name) if message.guild else f"Server_{message.guild_id}"
         )
 
-    # 2. Passive Listener Logic
-    # We relay EVERY message in a server to the backend so it can build 'Group Memory'
-    # We also relay all DMs.
-    should_relay = is_dm or not is_dm  # Effectively always True for DMs and Servers
+    # 2. Payload Construction
+    # We send RAW content so the backend can run its own regex
+    payload = {
+        "message": message.content,
+        "sender": message.author.display_name,
+        "group_name": group_name,
+    }
 
-    if should_relay:
-        clean_text = re.sub(r"<@!?\d+>", "", message.content).strip()
+    # 3. Typing & Relay Logic
+    # Always show typing if it's a DM or a Mention
+    should_reply_active = is_dm or is_mentioned
 
-        # Log based on whether it's a passive listen or an active reply
-        if is_dm or is_mentioned:
-            logger.info(
-                f"Active message from {message.author.display_name} in {group_name}"
-            )
-        else:
-            logger.info(
-                f"Passive chatter logged from {message.author.display_name} in {group_name}"
-            )
-
-        payload = {
-            "message": clean_text or "[chatter]",
-            "sender": message.author.display_name,
-            "group_name": group_name,
-        }
-
-        # 3. Typing & Relay Logic
-        # Only show 'typing...' if the bot is actually going to respond
-        typing_manager = (
-            message.channel.typing()
-            if (is_dm or is_mentioned)
-            else contextlib.nullcontext()
+    if should_reply_active:
+        logger.info(
+            f"Active message from {message.author.display_name} in {group_name}"
         )
+        typing_context = message.channel.typing()
+    else:
+        logger.info(
+            f"Passive chatter logged from {message.author.display_name} in {group_name}"
+        )
+        typing_context = contextlib.nullcontext()
 
-        try:
-            async with typing_manager:
-                backend_url = os.getenv("PSI09_API_URL")
-                session = await get_http_session()
+    # 4. The Relay
+    try:
+        async with typing_context:
+            backend_url = os.getenv("PSI09_API_URL")
+            session = await get_http_session()
+            async with session.post(backend_url, json=payload, timeout=25) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    reply = data.get("reply", "")
 
-                async with session.post(backend_url, json=payload, timeout=25) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        reply = data.get("reply", "")
-
-                        # 4. Reply Logic
-                        # Only send a message back to Discord if the backend generated a roast
-                        if reply:
-                            logger.info(f"Sending reply: {reply[:50]}...")
-                            try:
-                                await message.channel.send(reply, reference=message)
-                                logger.info("Reply sent successfully.")
-                            except Exception as discord_err:
-                                logger.warning(
-                                    f"Reference reply failed, sending plain: {discord_err}"
-                                )
-                                await message.channel.send(reply)
-                    else:
-                        # Only log errors if we were expecting a reply
-                        if is_dm or is_mentioned:
-                            error_body = await resp.text()
-                            logger.error(f"Backend Error ({resp.status}): {error_body}")
-
-        except asyncio.TimeoutError:
-            if is_dm or is_mentioned:
-                logger.error("Request to backend timed out.")
-        except Exception as e:
-            logger.error(f"Critical Interface Error: {str(e)}")
+                    if reply:
+                        logger.info(f"Sending reply: {reply[:50]}...")
+                        try:
+                            await message.channel.send(reply, reference=message)
+                        except:
+                            await message.channel.send(reply)
+                else:
+                    if should_reply_active:
+                        logger.error(f"Backend Error: {resp.status}")
+    except Exception as e:
+        logger.error(f"Relay Error: {e}")
 
 
 if __name__ == "__main__":
