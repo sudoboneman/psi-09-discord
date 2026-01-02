@@ -60,63 +60,86 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
+    # Ignore messages sent by the bot itself
     if message.author == client.user:
         return
 
+    # 1. Identify Context
     is_dm = isinstance(message.channel, discord.DMChannel)
     is_mentioned = client.user in message.mentions
 
-    if is_dm or is_mentioned:
-        logger.info(
-            f"Message detected from {message.author.display_name} in {'DM' if is_dm else 'Server'}"
-        )
+    # Define the group/context name for MongoDB
+    if is_dm:
+        group_name = "Discord_DM"
+    else:
+        # Use server name for collective tracking
+        group_name = str(message.guild.name) if message.guild else "Unknown_Server"
 
+    # 2. Passive Listener Logic
+    # We relay EVERY message in a server to the backend so it can build 'Group Memory'
+    # We also relay all DMs.
+    should_relay = is_dm or not is_dm  # Effectively always True for DMs and Servers
+
+    if should_relay:
         clean_text = re.sub(r"<@!?\d+>", "", message.content).strip()
 
+        # Log based on whether it's a passive listen or an active reply
+        if is_dm or is_mentioned:
+            logger.info(
+                f"Active message from {message.author.display_name} in {group_name}"
+            )
+        else:
+            logger.info(
+                f"Passive chatter logged from {message.author.display_name} in {group_name}"
+            )
+
         payload = {
-            "message": clean_text or "[empty_mention]",
+            "message": clean_text or "[chatter]",
             "sender": message.author.display_name,
-            "group_name": str(message.guild.name) if message.guild else "Discord_DM",
+            "group_name": group_name,
         }
 
-        async with message.channel.typing():
-            try:
+        # 3. Typing & Relay Logic
+        # Only show 'typing...' if the bot is actually going to respond
+        typing_manager = (
+            message.channel.typing()
+            if (is_dm or is_mentioned)
+            else contextlib.nullcontext()
+        )
+
+        try:
+            async with typing_manager:
                 backend_url = os.getenv("PSI09_API_URL")
-                logger.info(f"Relaying to backend: {backend_url}")
-
                 session = await get_http_session()
-                # Use a slightly longer timeout (25s) for OpenAI latency
-                async with session.post(backend_url, json=payload, timeout=25) as resp:
-                    logger.info(f"Backend status: {resp.status}")
 
+                async with session.post(backend_url, json=payload, timeout=25) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         reply = data.get("reply", "")
 
+                        # 4. Reply Logic
+                        # Only send a message back to Discord if the backend generated a roast
                         if reply:
                             logger.info(f"Sending reply: {reply[:50]}...")
                             try:
-                                # Try to reply with reference
                                 await message.channel.send(reply, reference=message)
                                 logger.info("Reply sent successfully.")
                             except Exception as discord_err:
                                 logger.warning(
-                                    f"Failed to send as reference, trying plain send: {discord_err}"
+                                    f"Reference reply failed, sending plain: {discord_err}"
                                 )
                                 await message.channel.send(reply)
-                        else:
-                            logger.warning(
-                                "Backend returned 200 but 'reply' key was empty."
-                            )
                     else:
-                        error_body = await resp.text()
-                        logger.error(f"Backend Error ({resp.status}): {error_body}")
+                        # Only log errors if we were expecting a reply
+                        if is_dm or is_mentioned:
+                            error_body = await resp.text()
+                            logger.error(f"Backend Error ({resp.status}): {error_body}")
 
-            except asyncio.TimeoutError:
-                logger.error("Request to backend timed out (25s limit reached).")
-            except Exception as e:
-                logger.error(f"Critical Interface Error: {str(e)}")
-                logger.error(traceback.format_exc())
+        except asyncio.TimeoutError:
+            if is_dm or is_mentioned:
+                logger.error("Request to backend timed out.")
+        except Exception as e:
+            logger.error(f"Critical Interface Error: {str(e)}")
 
 
 if __name__ == "__main__":
