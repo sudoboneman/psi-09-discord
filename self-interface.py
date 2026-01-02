@@ -6,34 +6,43 @@ import os
 import aiohttp
 import asyncio
 import re
+import traceback
+import logging
+import sys
 from dotenv import load_dotenv
+
+# Configure Logging to show in Render Console
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger("PSI09-Interface")
 
 load_dotenv()
 
 # --- Flask App for Render Keep-Alive ---
 app = Flask(__name__)
 
-@app.route('/')
+
+@app.route("/")
 def home():
-    # Health check endpoint for Render and UptimeRobot
     return "PSI-09 Self-Bot Interface is Active", 200
 
+
 def run_web_server():
-    # Render binds to a dynamic port; default to 5000 for local testing
     port = int(os.environ.get("PORT", 5000))
+    logger.info(f"Starting Flask keep-alive on port {port}")
     app.run(host="0.0.0.0", port=port)
 
+
 # --- Discord Self-Bot Configuration ---
-# Optimization: Disable heavy caches to save RAM on free tier VPS/Render
 client = commands.Bot(
-    command_prefix="!", 
-    self_bot=True, 
-    chunk_guilds_at_startup=False, 
-    max_messages=None  # Disables message cache for memory efficiency
+    command_prefix="!", self_bot=True, chunk_guilds_at_startup=False, max_messages=None
 )
 
-# Persistent session to avoid socket exhaustion
 http_session = None
+
 
 async def get_http_session():
     global http_session
@@ -41,51 +50,85 @@ async def get_http_session():
         http_session = aiohttp.ClientSession()
     return http_session
 
+
 @client.event
 async def on_ready():
-    print(f"PSI-09 Self-Bot Online: {client.user.name}")
+    logger.info(
+        f"SUCCESS: PSI-09 Self-Bot Online as {client.user.name} (ID: {client.user.id})"
+    )
+
 
 @client.event
 async def on_message(message):
-    # Do not respond to your own messages
     if message.author == client.user:
         return
 
-    # Trigger logic: Respond in DMs or if you are @mentioned in a server
     is_dm = isinstance(message.channel, discord.DMChannel)
     is_mentioned = client.user in message.mentions
 
     if is_dm or is_mentioned:
-        # 1. Clean mentions out of the content (converts <@ID> to empty string)
-        clean_text = re.sub(r'<@!?\d+>', '', message.content).strip()
-        
-        # 2. Map data to main.py expected POST arguments
+        logger.info(
+            f"Message detected from {message.author.display_name} in {'DM' if is_dm else 'Server'}"
+        )
+
+        clean_text = re.sub(r"<@!?\d+>", "", message.content).strip()
+
         payload = {
             "message": clean_text or "[empty_mention]",
             "sender": message.author.display_name,
-            "group_name": str(message.guild.name) if message.guild else "Discord_DM"
+            "group_name": str(message.guild.name) if message.guild else "Discord_DM",
         }
 
-        # 3. Relay to Roastbot Backend
         async with message.channel.typing():
             try:
+                backend_url = os.getenv("PSI09_API_URL")
+                logger.info(f"Relaying to backend: {backend_url}")
+
                 session = await get_http_session()
-                async with session.post(os.getenv("PSI09_API_URL"), json=payload, timeout=15) as resp:
+                # Use a slightly longer timeout (25s) for OpenAI latency
+                async with session.post(backend_url, json=payload, timeout=25) as resp:
+                    logger.info(f"Backend status: {resp.status}")
+
                     if resp.status == 200:
                         data = await resp.json()
                         reply = data.get("reply", "")
+
                         if reply:
-                            # Send response as a reply to the original message
-                            await message.channel.send(reply, reference=message)
+                            logger.info(f"Sending reply: {reply[:50]}...")
+                            try:
+                                # Try to reply with reference
+                                await message.channel.send(reply, reference=message)
+                                logger.info("Reply sent successfully.")
+                            except Exception as discord_err:
+                                logger.warning(
+                                    f"Failed to send as reference, trying plain send: {discord_err}"
+                                )
+                                await message.channel.send(reply)
+                        else:
+                            logger.warning(
+                                "Backend returned 200 but 'reply' key was empty."
+                            )
+                    else:
+                        error_body = await resp.text()
+                        logger.error(f"Backend Error ({resp.status}): {error_body}")
+
+            except asyncio.TimeoutError:
+                logger.error("Request to backend timed out (25s limit reached).")
             except Exception as e:
-                print(f"Relay Error: {e}")
+                logger.error(f"Critical Interface Error: {str(e)}")
+                logger.error(traceback.format_exc())
+
 
 if __name__ == "__main__":
-    # Start the Flask server in a background thread to satisfy Render's port binding
     threading.Thread(target=run_web_server, daemon=True).start()
-    
-    # Run the Discord self-bot
+
+    token = os.getenv("USER_TOKEN")
+    if not token:
+        logger.error("CRITICAL: USER_TOKEN not found in environment variables.")
+        sys.exit(1)
+
     try:
-        client.run(os.getenv("USER_TOKEN"))
+        client.run(token)
     except Exception as e:
-        print(f"Failed to start bot: {e}")
+        logger.error(f"Failed to start bot: {e}")
+        logger.error(traceback.format_exc())
