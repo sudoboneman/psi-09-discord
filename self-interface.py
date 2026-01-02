@@ -39,7 +39,7 @@ def run_web_server():
 
 # --- Discord Self-Bot Configuration ---
 client = commands.Bot(
-    command_prefix="!", self_bot=True, chunk_guilds_at_startup=False, max_messages=None
+    command_prefix="!", self_bot=True, chunk_guilds_at_startup=True, max_messages=None
 )
 
 http_session = None
@@ -67,14 +67,24 @@ async def on_message(message):
 
     # 1. Identify Context
     is_dm = isinstance(message.channel, discord.DMChannel)
+    is_group_dm = isinstance(message.channel, discord.GroupChannel)
     is_mentioned = client.user in message.mentions
 
     # Define the group/context name for MongoDB
     if is_dm:
         group_name = "Discord_DM"
+    elif is_group_dm:
+        # Use the group's name if it exists, otherwise use its unique ID
+        group_name = (
+            message.channel.name
+            if message.channel.name
+            else f"GroupDM_{message.channel.id}"
+        )
     else:
-        # Use server name for collective tracking
-        group_name = str(message.guild.name) if message.guild else "Unknown_Server"
+        # This is for actual Servers/Guilds
+        group_name = (
+            str(message.guild.name) if message.guild else f"Server_{message.guild_id}"
+        )
 
     # 2. Passive Listener Logic
     # We relay EVERY message in a server to the backend so it can build 'Group Memory'
