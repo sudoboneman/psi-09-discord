@@ -4,8 +4,8 @@ services:
     env: python
     plan: free # Free tier for testing
     region: singapore # Ensure this matches your backend's region for faster internal networking
-    buildCommand: pip install flask aiohttp discord.py-self python-dotenv
-    startCommand: python self_interface.py
+    buildCommand: pip install -r requirements.txt
+    startCommand: python3 self_interface.py
     envVars:
       - key: USER_TOKEN
         sync: false # Set this sensitive token manually in the Render dashboard
