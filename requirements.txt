@@ -1,0 +1,4 @@
+flask
+aiohttp
+discord.py-self
+python-dotenv

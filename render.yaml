@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: psi-09-discord-interface
+    env: python
+    plan: free # Free tier for testing
+    region: ohio # Ensure this matches your backend's region for faster internal networking
+    buildCommand: pip install flask aiohttp discord.py-self python-dotenv
+    startCommand: python self_interface.py
+    envVars:
+      - key: USER_TOKEN
+        sync: false # Set this sensitive token manually in the Render dashboard
+      - key: PSI09_API_URL
+        # If the backend is in the same blueprint, this links the internal URL automatically
+        fromService:
+          type: web
+          name: psi-09-roastbot
+          property: host
+      - key: PORT
+        value: 10000 # Default Render port
