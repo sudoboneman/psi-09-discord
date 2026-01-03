@@ -1,5 +1,4 @@
-flask
+discord.py>=2.0.0
 aiohttp
-discord.py-self
+flask
 python-dotenv
-audioop-lts
