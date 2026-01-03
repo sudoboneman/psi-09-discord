@@ -5,9 +5,9 @@ services:
     plan: free # Free tier for testing
     region: singapore # Ensure this matches your backend's region for faster internal networking
     buildCommand: pip install -r requirements.txt
-    startCommand: python3 self_interface.py
+    startCommand: python3 interface.py
     envVars:
-      - key: USER_TOKEN
+      - key: BOT_TOKEN
         sync: false # Set this sensitive token manually in the Render dashboard
       - key: PSI09_API_URL
         # If the backend is in the same blueprint, this links the internal URL automatically
